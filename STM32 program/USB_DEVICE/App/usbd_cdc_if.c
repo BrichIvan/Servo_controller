@@ -51,7 +51,7 @@
 #include "usbd_cdc_if.h"
 
 /* USER CODE BEGIN INCLUDE */
-
+#include "usb_processing.h"
 /* USER CODE END INCLUDE */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -294,11 +294,8 @@ static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
   USBD_CDC_ReceivePacket(&hUsbDeviceFS);
 	
-	USBRx.flag = 1;
-
-  memset (USBRx.buffer, '\0', sizeof (USBRx.buffer));	// Clear the main data buffer
-  memcpy (USBRx.buffer, Buf, (uint8_t) *Len);
-  memset (Buf, '\0', (uint8_t) *Len);	// Clear the USB Rx buffer
+	// Copy and clean Rx buffer
+	USB_Frame_Receive (&USBRx, Buf, Len);
 	
   return (USBD_OK);
   /* USER CODE END 6 */

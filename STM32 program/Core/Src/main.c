@@ -57,17 +57,19 @@
 
 /* USER CODE BEGIN Includes */
 #include "usbd_cdc_if.h"
+#include "usb_processing.h"
+#include "servo_control.h"
 /* USER CODE END Includes */
 
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
-USBRx_TypeDef USBRx;
+USBRx_TypeDef USBRx;	// TypeDef for USB_Processing module
 
-float angle = 0.0;
-int32_t angle_PWM = 0;
-char USBTxData [16];
+enum State_Enum state = STANDBY;
+int32_t angle_PWM = 0;	// angle in PWM counts
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -75,7 +77,7 @@ void SystemClock_Config(void);
 
 /* USER CODE BEGIN PFP */
 /* Private function prototypes -----------------------------------------------*/
-HAL_StatusTypeDef AngleDecode (float* angle, USBRx_TypeDef *USBRx);
+
 /* USER CODE END PFP */
 
 /* USER CODE BEGIN 0 */
@@ -106,38 +108,26 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
+	
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+	USB_Restart_GPIO();	// Toggle D+ to ground for reconnection
   MX_CRC_Init();
   MX_IWDG_Init();
   MX_TIM1_Init();
   MX_USB_DEVICE_Init();
+  MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
 	
-	HAL_Delay (500);
-	
-	//------------------------- TEST VALUES
+	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);		// PWM timer start
+  HAL_TIM_OC_Start_IT(&htim4, TIM_CHANNEL_1);	// Control loop TIM start (20 Hz)
 
-  USBRx.buffer [0] = 0x02;
-  USBRx.buffer [1] = 0xAD;
-  USBRx.buffer [2] = 0xA7;
-  USBRx.buffer [3] = 0x14;
-  USBRx.buffer [4] = 0x93;
-  USBRx.buffer [5] = 0xA9;
-
-
-  // angle [deg] transform
-  AngleDecode (&angle, &USBRx);
-  angle_PWM = (int32_t) (angle * SERVO_PWM_MIN/ (2*SERVO_ANGLE_MAX));
-  angle_PWM += SERVO_PWM_MIN/2;		// positive pulse shift
-  angle_PWM += SERVO_PWM_MIN;		// servo min pulse shift
-
-
-  HAL_IWDG_Refresh(&hiwdg);
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+  // Wait for the first frame
+  while (USBRx.flag == 0) {
+	  HAL_IWDG_Refresh(&hiwdg);
+  }
 	
   /* USER CODE END 2 */
 
@@ -146,38 +136,47 @@ int main(void)
   while (1)
   {
 		
-		if (USBRx.flag != 0) {
-		  // USB data received
-		  if (AngleDecode (&angle, &USBRx) == HAL_OK) {
-			  // angle [deg] transform
-			  angle_PWM = (int32_t) (angle * SERVO_PWM_MIN/ (2*SERVO_ANGLE_MAX));
-			  angle_PWM += SERVO_PWM_MIN/2;		// positive pulse shift
-			  angle_PWM += SERVO_PWM_MIN;		// servo min pulse shift
+		if (state == CONTROL_LOOP) {
+		  // Control loop (20 Hz)
+		  if (USBRx.flag == 0) {
+			  // Frame not received
+			  USBRx.error_cnt ++;
+		  } else {
+			  // USB data received
+			  USBRx.error_flag += USB_Frame_Processing (&USBRx, &hcrc);		// Unpack and CRC check
+			  Angle_Decode (&angle_PWM, &USBRx.data);											// Convert to PWM counts
 
-			  if ((angle_PWM <= SERVO_PWM_MAX) && (angle_PWM >= SERVO_PWM_MIN)) {
+			  if (USBRx.error_flag == 0) {
+				  // All processing success
 				  htim1.Instance->CCR1 = angle_PWM;
-				  // Test mode
-				  sprintf (USBTxData, "Angle: %d", (int) angle_PWM);
-				  CDC_Transmit_FS ((uint8_t *) USBTxData, 11);
-
+				  USBRx.error_cnt = 0;
 			  } else {
 				  USBRx.error_cnt ++;
 			  }
+
+			  USBRx.flag = 0;
+			  USBRx.error_flag = 0;
 		  }
 
-		  // Echo
-		  //CDC_Transmit_FS ((uint8_t *) USBRx.buffer, 6);
+		  state = STANDBY;
 
-		  USBRx.flag = 0;
+		  // Check for max errors
+		  if (USBRx.error_cnt >= ERRORS_MAX) {
+			  state = ERROR_HOLD;
+		  }
+
+
+	  } else if (state == ERROR_HOLD) {
+		  // More than ERRORS_MAX errors
+		  // Wait for manual restart
+		  while (1) {
+			  HAL_IWDG_Refresh(&hiwdg);
+		  }
+
 	  }
-	  HAL_IWDG_Refresh(&hiwdg);
-	  HAL_Delay (50);
 
-	  /*
-	  // Test transmit routine
-	  CDC_Transmit_FS ((uint8_t *) USBTxData, strlen (USBTxData));
-	  HAL_Delay (1000);
-	  */
+	  // STANDBY - wait for the next control loop
+	  HAL_IWDG_Refresh(&hiwdg);
 
   /* USER CODE END WHILE */
 
@@ -248,28 +247,7 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-HAL_StatusTypeDef AngleDecode (float* angle, USBRx_TypeDef *USBRx) {
-	HAL_StatusTypeDef status = HAL_OK;
-	USBRx->data = (USBRx->buffer [0] << 8) | USBRx->buffer [1];
-	USBRx->crc = (USBRx->buffer [2] << 24) | (USBRx->buffer [3] << 16) | (USBRx->buffer [4] << 8) | USBRx->buffer [5];
 
-	uint32_t CRC_calc = HAL_CRC_Calculate(&hcrc, (uint32_t *) &USBRx->data, 1);
-
-	if (CRC_calc == USBRx->crc) {
-		// The message received correctly
-		*angle = (float) USBRx->data * (SERVO_ANGLE_MAX/INT16_MAX_VALUE); // [deg]
-
-		if ((*angle < -90.0) || (*angle > 90.0)) {
-			status = HAL_ERROR;
-			USBRx->error_cnt ++;
-		}
-
-	} else {
-		status = HAL_ERROR;
-		USBRx->error_cnt ++;
-	}
-	return status;
-}
 /* USER CODE END 4 */
 
 /**

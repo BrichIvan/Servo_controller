@@ -55,11 +55,12 @@
 
 /* USER CODE BEGIN Includes */
 #include "stdint.h"
+
 /* USER CODE END Includes */
 
 /* Private define ------------------------------------------------------------*/
-#define IWDG_1S_PERIOD 2500
-#define SERVO_PWM_MID 2700
+#define IWDG_1S_PERIOD 	2500
+#define SERVO_PWM_MID 	4500	// PWM counts for 0 deg
 
 /* ########################## Assert Selection ############################## */
 /**
@@ -69,19 +70,7 @@
 /* #define USE_FULL_ASSERT    1U */
 
 /* USER CODE BEGIN Private defines */
-#define SERVO_ANGLE_MAX		90.0
-#define INT16_MAX_VALUE		32767.0
 
-#define SERVO_PWM_MAX		3600
-#define SERVO_PWM_MIN		1800
-
-typedef struct {
-	uint8_t flag;
-	uint8_t buffer [6];
-	int32_t data;
-	uint32_t crc;
-	uint8_t error_cnt;
-} USBRx_TypeDef;
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus
